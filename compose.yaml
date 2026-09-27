@@ -1,0 +1,63 @@
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: dashboard
+      POSTGRES_USER: dashboard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dashboard_local}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dashboard -d dashboard"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  ollama:
+    image: ollama/ollama:0.34.4
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_NO_CLOUD: "1"
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+  model-init:
+    image: ollama/ollama:0.34.4
+    depends_on:
+      - ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["until ollama list >/dev/null 2>&1; do sleep 2; done; ollama pull $${MODEL}"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
+  app:
+    build: .
+    environment: &app_env
+      DATABASE_URL: postgresql+psycopg://dashboard:${POSTGRES_PASSWORD:-dashboard_local}@db:5432/dashboard
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
+      RETRY_INTERVAL_SECONDS: ${RETRY_INTERVAL_SECONDS:-3600}
+      APP_ADDRESS: 0.0.0.0
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8501:8501"
+  worker:
+    build: .
+    profiles: ["worker"]
+    environment: *app_env
+    depends_on:
+      db:
+        condition: service_healthy
+      model-init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "dashboard.worker", "--loop"]
+volumes:
+  postgres_data:
+  ollama_data:
